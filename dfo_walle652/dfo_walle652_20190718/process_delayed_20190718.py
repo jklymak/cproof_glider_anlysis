@@ -136,8 +136,6 @@ with xr.open_dataset(f'L0-timeseries/{deploy_name}_L0.nc') as ds0:
 
     axs[0].legend()
 
-
-
 with xr.open_dataset('L0-gridfiles/dfo-walle652-20190718_grid.nc') as ds:
     fig, ax = plt.subplots()
     pcm = ax.pcolormesh(ds['time'], ds['depth'], ds['salinity'].diff(dim='time'), 
