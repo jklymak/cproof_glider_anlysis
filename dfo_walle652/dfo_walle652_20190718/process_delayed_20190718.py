@@ -122,11 +122,9 @@ plot_profiles(f'{deploy_prefix}/L0-timeseries/{deploy_name}_L0.nc', 'figs/Profil
 
 with get_gridfile() as ds:
     fig, ax = plt.subplots()
-    ds['temperature'].mean(dim='time').plot(ax=ax)
     Tmean = ds['temperature'].mean(dim='time')
 
 Tmean = Tmean.sortby(Tmean, ascending=True).where(np.isfinite(Tmean), drop=True)
-Tmean.plot(ax=ax)
 
 def get_salinity_grid(ts):
     ts = ts.where(np.isfinite(ts.salinity), drop=True)
@@ -168,7 +166,7 @@ with get_timeseries() as ts:
     
 sal.to_netcdf('SalinityGrid.nc')
 bad_profiles = sal.profiles.where(sal.bad > 0.05, drop=True)
-print(bad_profiles)
+print('Bad:', bad_profiles.values)
 
 # -
 
@@ -182,23 +180,6 @@ with xr.open_dataset('SalinityGrid.nc') as sal:
     sal.salinity.mean(dim='profiles').plot(ax=ax[1])
     fig, ax = plt.subplots()
     (sal['salinity']-sal.salinity.mean(dim='profiles')).plot(vmin=-2, vmax=2, cmap='RdBu_r')
-
-# +
-with xr.open_dataset('SalinityGrid.nc') as sal:
-    fig, ax = plt.subplots()
-    sal['salinityClean'].plot(vmin=32, vmax=34.5)
-    
-    fig, ax = plt.subplots()
-    sal.NgoodSal.plot(ax=ax)
-
-    sal.NgoodSalClean.plot(ax=ax)
-    print(sal.bad)
-    
-    
-
-    
-    
-# -
 
 # ## T/C offset
 #
@@ -502,199 +483,6 @@ with get_gridfile(level='L1') as ds:
 
 
 # -
-
-with xr.open_dataset('./dfo-walle652-20190718_grid.nc') as ds:
-    fig, axs = plt.subplots(3, 1, sharex=True, sharey=True, figsize=(7, 7), constrained_layout=True)
-    ax = axs[0]
-    pcm = ax.pcolormesh(ds['time'], ds['depth'], ds['salinity'], 
-                        rasterized=True, cmap='YlGnBu', vmin=31.5, vmax=34.5)
-    fig.colorbar(pcm, ax=ax)
-    ax.set_ylim(200, 0)
-    #ax.set_xlim(left=np.datetime64('2019-08-15'), right=np.datetime64('2019-08-30'))
-    ax.grid(True)
-
-    ax = axs[1]
-    pcm = ax.pcolormesh(ds['time'], ds['depth'], ds['temperature'], 
-                        rasterized=True, cmap='hot', vmin=4, vmax=16)
-    fig.colorbar(pcm, ax=ax)
-    ax.grid(True)
-    ax.set_ylim(200, 0)
-    #ax.set_xlim(left=np.datetime64('2019-09-25'), right=np.datetime64('2019-10-05'))
-
-with get_timeseries() as ds:
-    good = np.where(np.isfinite(ds.temperature))[0]
-    fig, ax = plt.subplots()
-    t = (ds.time[good].values - ds.time[good[0]].values).astype('float')/1e9
-    
-    ax.hist(np.diff(t), bins=np.arange(0, 7, 0.1))
-    
-
-
-# +
-with xr.open_dataset('../dfo-walle652-20191209/L0-gridfiles/dfo-walle652-20191209_grid.nc') as ds:
-    fig, ax = plt.subplots()
-#    ax.pcolormesh(ds['time'], ds['depth'], ds['density'], rasterized=True)
-
-    ax.imshow(ds['density'])
-
-
-
-
-# -
-
-
-
-# +
-import pyglider.slocum as slocum
-import pyglider.utils as utils
-from scipy.signal import argrelextrema
-
-with xr.open_dataset('../dfo-walle652-20191209/L0-timeseries/dfo-walle652-20191209_L0.nc') as ds:
-    fig, axs = plt.subplots(nrows=3, ncols=1, constrained_layout=True, sharex=True)
-    # ds = ds.isel(time=range(400000, 5000000))
-    if 0:
-        good = np.where(np.isfinite(ds.pressure))[0]
-        filt_length = 30
-        filt_length = int(filt_length * float(np.diff(ds.time.values).mean())/1e9 )
-        print()
-        p = np.convolve(ds.pressure.values[good],
-                        np.ones(filt_length) / filt_length, 'same')
-        pp = p[::10]
-
-        maxs = argrelextrema(pp, np.greater)[0]
-        mins = argrelextrema(pp, np.less)[0]
-        maxs = good[maxs * 10]
-        mins = good[mins * 10]
-        mins = np.concatenate(([0], mins, good[[-1]]))
-
-        print(mins)
-        pronum = 1
-        profile = ds.pressure.values * 0
-        direction = ds.pressure.values * 0
-        for n, i in enumerate(mins[:-1]):
-            # down
-            try:
-
-                print(n, mins[[n, n+1]], maxs[[n, n+1]])
-                profile[mins[n]:maxs[n]+1] = pronum
-                direction[mins[n]:maxs[n]+1] = +1
-                pronum += 1
-                # up
-                profile[maxs[n]:mins[n+1]+1] = pronum
-                direction[maxs[n]:mins[n+1]+1] = -1
-                pronum += 1
-            except:
-                print('Failed?')
-    
-    #ds = utils.get_profiles_new(ds,
-    #            filt_time=100, profile_min_time=400)
-    print('Done???')
-    
-    axs[0].plot(ds['time'], ds['pressure'], '.', markersize=1)
-
-    axs[0].plot(ds['time'][good], p, 'r.', markersize=1)
-
-    axs[0].plot(ds['time'][mins], ds['pressure'][mins], 'g.', markersize=5)
-
-    axs[0].plot(ds['time'][maxs], ds['pressure'][maxs], 'b.', markersize=5)
-
-
-    axs[1].plot(ds['time'], ds['profile_index'], '.', markersize=1)
-    axs[2].plot(ds['time'], ds['profile_direction'], '.', markersize=1)
-    pri
-# -
-
-
-
-# ## Add data_mode to files...
-
-import os
-td = ['../dfo-walle652-20191209/L0-gridfiles/dfo-walle652-20191209_grid.nc', 
-      '../dfo-walle652-20191209/L0-timeseries/dfo-walle652-20191209_L0.nc',
-      '../dfo-walle652-20190718/L0-gridfiles/dfo-walle652-20190718_grid.nc', 
-      '../dfo-walle652-20190718/L0-timeseries/dfo-walle652-20190718_L0.nc',
-     ]
-for fn in td:
-    with xr.open_dataset(fn) as ds:
-        ds.attrs['data_mode'] = 'P'
-        ds.to_netcdf('tmp.nc')
-    os.system(f'mv tmp.nc {fn}')
-
-
-with xr.open_dataset(fn) as ds:
-    print(ds)
-
-# ## Check up/down
-
-with xr.open_dataset('L0-gridfiles/dfo-walle652-20190718_grid.nc') as ds:
-    fig, axs = plt.subplots()
-    
-    axs.plot(ds.salinity[:, 100:104:2], ds.depth,  '.r')
-
-    axs.plot(ds.salinity[:, 101:104:2], ds.depth,  '.g')
-
-    axs.set_ylim([200, 0])
-
-# +
-ind = 300
-with xr.open_dataset('L0-gridfiles/dfo-walle652-20190718_grid.nc') as ds:
-    fig, axs = plt.subplots()
-    
-    axs.plot(ds.salinity[:, ind + np.arange(0, 6, 2)], ds.temperature[:, ind + np.arange(0, 6, 2)],  '.r', markersize=1)
-
-    axs.plot(ds.salinity[:, ind + np.arange(1, 6, 2)], ds.temperature[:, ind + np.arange(1, 6, 2)],  '.g', markersize=1)
-
-#    axs.set_ylim([200, 0])
-#    axs.set_ylim([4, 8])
-#    axs.set_xlim([33.2, 34.2])
-
-# +
-ind = 300
-with xr.open_dataset('L0-timeseries/dfo-walle652-20190718_L0.nc') as ds:
-    ds = ds.isel(time=slice(10000, 40000))
-    fig, axs = plt.subplots()
-    
-    print(np.sum(ds.profile_direction>0))
-    axs.plot(ds.salinity[ds.profile_direction>0], ds.temperature[ds.profile_direction>0],  '.r', markersize=1)
-    print(np.sum(ds.profile_direction<0))
-
-
-    axs.plot(ds.salinity[ds.profile_direction<0], ds.temperature[ds.profile_direction<0],  '.g', markersize=1)
-
-
-#    axs.plot(ds.salinity, ds.temperature,  '.g', markersize=1)
-
-#    axs.set_ylim([200, 0])
-    axs.set_ylim([4, 8])
-    axs.set_xlim([33.2, 34.2])
-# -
-
-import logging 
-logging.basicConfig(level=logging.INFO)
-with xr.open_dataset('L0-timeseries/dfo-walle652-20190718_L0.nc') as ds:
-    
-    #ds = ds.isel(time=slice(0, 240000))
-    #ds = utils.get_profiles_new(ds)
-    fig, axs = plt.subplots(nrows=3, sharex=True)
-    
-    axs[0].plot(ds.pressure, '.')    
-    axs[1].plot(ds.profile_index, '.')
-    axs[2].plot(ds.profile_direction, '.')
-
-import logging 
-logging.basicConfig(level=logging.INFO)
-with xr.open_dataset('../dfo-walle652-20191209/L0-timeseries/dfo-walle652-20191209_L0.nc') as ds:
-    
-    #ds = ds.isel(time=slice(0, 240000))
-    #ds = utils.get_profiles_new(ds)
-    fig, axs = plt.subplots(nrows=3, sharex=True)
-    
-    axs[0].plot(ds.pressure, '.')    
-    axs[1].plot(ds.profile_index, '.')
-    axs[2].plot(ds.profile_direction, '.')
-
-with xr.open_dataset('../dfo-walle652-20190718/L0-gridfiles/dfo-walle652-20190718_grid.nc') as ds:
-    print(ds)
 
 
 
