@@ -39,6 +39,11 @@ import numpy as np
 import seawater 
 # %matplotlib notebook
 import matplotlib.units as munits
+import pyglider
+
+import pyglider.ncprocess as ncprocess
+print(ncprocess.__file__)
+
 
 import matplotlib.dates as mdates
 
@@ -49,10 +54,19 @@ munits.registry[np.datetime64] = converter
 
 # %load_ext autoreload
 # %autoreload 2
-# -
 
+# +
 deploy_name = 'dfo-walle652-20190718'
+deploy_prefix = '../../../deployments/dfo-walle652/dfo-walle652-20190718/'
+# !mkdir figs
+def get_timeseries(level='L0'):
+    return xr.open_dataset(f'{deploy_prefix}/{level}-timeseries/{deploy_name}_{level}.nc')
 
+def get_gridfile(level='L0'):
+    return xr.open_dataset(f'{deploy_prefix}/{level}-gridfiles/{deploy_name}_grid.nc')
+
+
+# -
 
 # ## Profile Check
 #
@@ -96,8 +110,94 @@ def plot_profiles(fname, plotname):
             plt.show()
     fig.savefig(plotname)
             
-plot_profiles(f'L0-timeseries/{deploy_name}_L0.nc', 'figs/ProfileCheck.png')
+plot_profiles(f'{deploy_prefix}/L0-timeseries/{deploy_name}_L0.nc', 'figs/ProfileCheck.png')
 
+# -
+
+# ## Check for suspect salinity profiles
+#
+# Biology often gets caught in the conductivity cell and leads to large blips in the salinity (and sometimes the temperature).  This simple check looks for profiles that are obviously contaminated by this to exclude from analysis below.  More stringent checks will be applied later
+
+# +
+
+with get_gridfile() as ds:
+    fig, ax = plt.subplots()
+    ds['temperature'].mean(dim='time').plot(ax=ax)
+    Tmean = ds['temperature'].mean(dim='time')
+
+Tmean = Tmean.sortby(Tmean, ascending=True).where(np.isfinite(Tmean), drop=True)
+Tmean.plot(ax=ax)
+
+def get_salinity_grid(ts):
+    ts = ts.where(np.isfinite(ts.salinity), drop=True)
+    
+    # bin the data:
+    tbins = Tmean.values[::7]
+    profile_bins = np.unique(ts['profile_index'])
+    profile_bins = np.hstack([profile_bins, profile_bins[-1]+1])
+    direction = profile_bins * 0
+    for n, i in enumerate(profile_bins):
+        ind = np.where(ts['profile_index'] == i)[0]
+        direction[n] = np.median(ts.profile_direction[ind])
+
+        
+    salin, xx, yy, binn = stats.binned_statistic_2d(
+                        ts['temperature'].values,
+                        ts['profile_index'].values,
+                        values=ts['salinity'].values, statistic='mean',
+                        bins=[tbins, profile_bins])
+    sal = xr.Dataset({'profiles': profile_bins[:-1], 'temperature': tbins[:-1]+np.diff(tbins)/2, 'salinity':(('temperature', 'profiles'), salin)})
+    sal['dS'] = np.abs(sal.salinity - sal.salinity.mean(dim='profiles'))
+    sal['dS'].plot(vmin=0, vmax=3, cmap='hot')
+    sal['salinityClean'] = sal.salinity.where( sal.dS < 4 * sal.salinity[:, :1000].std(dim='profiles'))
+    sal['NgoodSal'] = (sal.salinity / sal.salinity).sum(dim='temperature')
+
+    sal['NgoodSalClean'] = (sal.salinityClean / sal.salinityClean).sum(dim='temperature')
+    sal['profile_direction'] = direction
+
+    sal['bad'] = (sal.NgoodSal - sal.NgoodSalClean) / sal.NgoodSal
+    Bad = sal.bad + 0 * sal.salinityClean
+    
+    sal['salinityClean'] = sal.salinityClean.where(Bad<0.025) 
+    
+    return sal
+
+with get_timeseries() as ts:
+    # ts = ts.sel(time=slice(np.datetime64('2019-09-25'), np.datetime64('2019-09-27T03:00:00')))
+    sal = get_salinity_grid(ts)
+    
+sal.to_netcdf('SalinityGrid.nc')
+bad_profiles = sal.profiles.where(sal.bad > 0.05, drop=True)
+print(bad_profiles)
+
+# -
+
+# From the below plots, where salinity is plotted into temperature space, we see that salinities that are about 4 standard deviations from the mean are good candidates to flag:
+
+with xr.open_dataset('SalinityGrid.nc') as sal:
+    fig, ax = plt.subplots()
+    sal.salinity.plot(vmin=30)
+    fig, ax = plt.subplots(2, 1)
+    sal.salinity.std(dim='profiles').plot(ax=ax[0])
+    sal.salinity.mean(dim='profiles').plot(ax=ax[1])
+    fig, ax = plt.subplots()
+    (sal['salinity']-sal.salinity.mean(dim='profiles')).plot(vmin=-2, vmax=2, cmap='RdBu_r')
+
+# +
+with xr.open_dataset('SalinityGrid.nc') as sal:
+    fig, ax = plt.subplots()
+    sal['salinityClean'].plot(vmin=32, vmax=34.5)
+    
+    fig, ax = plt.subplots()
+    sal.NgoodSal.plot(ax=ax)
+
+    sal.NgoodSalClean.plot(ax=ax)
+    print(sal.bad)
+    
+    
+
+    
+    
 # -
 
 # ## T/C offset
@@ -108,41 +208,327 @@ plot_profiles(f'L0-timeseries/{deploy_name}_L0.nc', 'figs/ProfileCheck.png')
 #
 # This CTD is pumped, however, so the lags are nowhere near as bad as other glider CTDs.  The evidence below is that perhaps a half-second delay will improve the match near the surface, but adding that delay makes the profile more variable at deeper depths, so the advantage is quite minimal.  Note the tightness of the deep T/S curves, so overall this CTD is doing quite a good job.
 
-with xr.open_dataset(f'L0-timeseries/{deploy_name}_L0.nc') as ds0:
+with get_timeseries() as ds0:
     fig, ax = plt.subplots()
 
     for td in range(100, 104):
         
         ds = ds0.where(ds0['profile_index']==td, drop=True)
-        ax.plot(ds.salinity, ds.temperature, '.', markersize=1, label=f'{td}, {ds.profile_direction[10].values}' )
+        ax.plot(ds.salinity, ds.temperature, '.', markersize=1, label=f'Cast: {td}, {ds.profile_direction[10].values}' )
+        ax.set_xlabel('Salinity [psu]')
+        ax.set_ylabel('Temperature $[^oC]$')
+        ax.set_title(f'{deploy_name}', loc='left')
+        ax.grid(True)
     ax.legend()
 
-with xr.open_dataset(f'L0-timeseries/{deploy_name}_L0.nc') as ds0:
-    fig, axs = plt.subplots(2, 1, sharex=True, sharey=True, figsize=(7, 7))
+# This issue is easily seen in the temperature-gridded salinity shown above.
 
-    for td in range(100, 104):
-        
-        ds = ds0.where(ds0['profile_index']==td, drop=True)
-        good = np.where(np.isfinite(ds.conductivity.values))[0]
-        corr = -500
-        ds['new_conductivity']= np.interp(ds.time, ds.time[good]+np.timedelta64(corr, 'ms'), ds.conductivity[good])
-        ds['new_salinity'] = seawater.eos80.salt(ds['new_conductivity'] / seawater.constants.c3515 * 10, ds.temperature, ds.pressure)
-        axs[0].plot(ds.salinity, ds.temperature, '.', markersize=1, label=f'{td}, {ds.profile_direction[10].values}' )
-        axs[1].set_title(f'Correction = {corr} [ms]')
-        axs[1].plot(ds.new_salinity, ds.temperature, '.', markersize=1, label=f'{td}, {ds.profile_direction[10].values}' )
-        axs[0].grid(True)
+with xr.open_dataset('SalinityGrid.nc') as sal:
+    print(sal)
+    fig, ax = plt.subplots(2, 1, sharex=True, constrained_layout=True)
+    ax[0].plot(sal.profiles, sal.profile_direction[:-1])
+    ax[0].set_ylim([-1.2, 1.2])
+    ax[0].set_ylabel('Profile Dir')
+    sal.salinityClean.plot(ax=ax[1], vmin=32, vmax=33)
+    ax[0].set_xlim(400, 600)
 
-        axs[1].grid(True)
+# ### Recursive filter on temperature
+#
+# Following Garauetal11a, Morison et al 1994:
+#
+# A correction to the temperature is made with the following filter: 
+#
+# `dTn(n) = -b dTn(n-1) + a[T(n) - T(n-1)]`
+#
+# or in terms of a `lfilter` with `a[0]=1`
+#
+# `dTn(n) = a[1] * dTn[n-1] + b[0]*T[n] + b[1]*T[n-1]`
+#
+# and `b[1] = -b[0]`.
+#
+# They say $b_0 = \frac{4 f_n \alpha \tau}{1 + 4 f_n \tau}$, where $fn$ is the Nyquist frequency (=0.25 for seabird GPCTD), $\alpha$ is the amplitude of the error, and $\tau$ is a timeconstant.  $\alpha$ and $\tau$ are determined by minimizing the difference between up and down casts. 
 
-    axs[0].legend()
+# ```
+#  dtime = diff(time_val);
+# % sampling_freq = 1 ./ dtime;
+# % nyquist_freq = 0.5 * sampling_freq;
+# % coefa = alpha .* (4 * nyquist_freq .* tau) ./ (1 + 4 * nyquist_freq .* tau);
+# % coefb = 1 - 2  * (4 * nyquist_freq .* tau) ./ (1 + 4 * nyquist_freq .* tau);
+# % coefa = 2 * alpha ./ (2 + dtime .* beta); % from SBE Data Processing.
+# % coefb = 1 - 2 .* coefa ./ alpha;          
+# coefa = 2 * alpha ./ (2 + dtime ./ tau);  % same using tau instead of beta.
+# coefb = 1 - 4 ./ (2 + dtime ./ tau);
+# ```
+#
 
-with xr.open_dataset('L0-gridfiles/dfo-walle652-20190718_grid.nc') as ds:
+# Below is an example of running this procedure on a snapshot of data, and the routine for doing the analysis.
+
+# +
+import scipy.signal as signal
+import scipy.stats as stats
+import pyglider.ncprocess as ncprocess
+
+def get_TS_diff(alphatau, ts, fn, reterr=True):
+
+    alpha, tau = alphatau
+    alpha = alpha / 1e2
+    # print(alpha, tau)
+
+    coefa = 4 * fn * alpha * tau / (1 + 4 * fn * tau)
+    if coefa == 0:
+        coefb = 0
+    else:
+        coefb = 1 - 2 * coefa / alpha
+    b = np.array([1, -1]) * coefa
+    a = np.array([1, coefb])
+
+
+    ts = ts.where(np.isfinite(ts.temperature+ts.conductivity), drop=True)
+
+    x0 = ts.temperature.values
+    x0  = signal.lfilter(b, a, ts.temperature.values)
+    
+    ts['temperature'] =  ts.temperature - x0
+    ts['salinity'].values = seawater.eos80.salt(ts.conductivity / seawater.constants.c3515 * 10, 
+                                         ts.temperature, ts.pressure)
+    ts = ts.where(np.isfinite(ts.salinity), drop=True)
+    
+    # bin the data:
+    tbins = Tmean.values[::7]
+    tbins = tbins[tbins<16]
+    tbins = tbins[tbins > 6]
+    profile_bins = np.unique(ts['profile_index'])
+    direction = profile_bins * 0
+    for n, i in enumerate(profile_bins):
+        ind = np.where(ts['profile_index'] == i)[0]
+        direction[n] = np.median(ts.profile_direction[ind])
+    direction = direction[1:-1]
+    profile_bins = profile_bins[1:]
+
+    sal, xx, yy, binn = stats.binned_statistic_2d(
+                        ts['temperature'].values,
+                        ts['profile_index'].values,
+                        values=ts['salinity'].values, statistic='mean',
+                        bins=[tbins, profile_bins])
+    ind = np.where(np.abs(np.diff(direction)))
+    
+    err = np.nansum(np.nansum(np.diff(sal, axis=1)[:, ind]**2, axis=0))
+    
+    if reterr:
+        return err
+    else:
+        return ts, sal
+
+
+with get_timeseries() as ts:
+    t0 = np.datetime64('2019-08-01')
+    ts = ts.sel(time=slice(t0, t0 + np.timedelta64(3, 'D')))
+    ts = ts.where(np.isfinite(ts.temperature+ts.conductivity), drop=True, )
+    for bad in bad_profiles:
+        ts = ts.where(~(ts.profile_index==bad), drop=True)
     fig, ax = plt.subplots()
-    pcm = ax.pcolormesh(ds['time'], ds['depth'], ds['salinity'].diff(dim='time'), 
-                        rasterized=True, vmin=-0.1/2, vmax=0.1/2, cmap='RdBu_r')
-    fig.colorbar(pcm, shrink=0.6)
-    ax.set_ylim([1000, 0])
-    print(ds['density'])
+    ind = np.where(ts.profile_direction.values== 1)[0]
+    ax.plot(ts.salinity[ind], ts.temperature[ind], '.', markersize=1)
+
+    ind = np.where(ts.profile_direction.values == -1)[0]
+    ax.plot(ts.salinity[ind], ts.temperature[ind], 'r.', markersize=1)
+
+    import scipy.optimize as optimize
+
+    bnds = ((0.0001, 200), (0.0001, 150))
+    
+    res = optimize.minimize(get_TS_diff, (6, 10), (ts, 0.25), tol=1e-4, bounds=bnds)
+    
+    tau = res.x[1]
+    alpha = res.x[0]
+    
+    newts, sal = get_TS_diff((alpha, tau), ts, 0.25, reterr=False)
+    
+    ind = np.where(newts.profile_direction.values== 1)[0]
+    ax.plot(newts.salinity[ind]+3, newts.temperature[ind], 'g.', markersize=1)
+
+    ind = np.where(newts.profile_direction.values==-1)[0]
+    ax.plot(newts.salinity[ind]+3, newts.temperature[ind], 'r.', markersize=1)
+
+    fig, ax = plt.subplots(2, 1)
+    ax[1].pcolormesh(sal)
+    _, salold = get_TS_diff((0, 0), ts, 0.25, reterr=False)
+    ax[0].pcolormesh(salold)
+
+    print(res)
+# -
+
+# ### Determine IIR filter co-eficitients
+#
+# Using this minimizing procedure, we apply this in three day blocks.  The region of a "good" fit is quite broad, so here we choose $\tau = 12s$ and $\alpha = 0.035$
+
+# +
+import time, sys
+from IPython.display import clear_output
+
+def update_progress(progress):
+    bar_length = 20
+    if isinstance(progress, int):
+        progress = float(progress)
+    if not isinstance(progress, float):
+        progress = 0
+    if progress < 0:
+        progress = 0
+    if progress >= 1:
+        progress = 1
+
+    block = int(round(bar_length * progress))
+
+    clear_output(wait = True)
+    text = "Progress: [{0}] {1:.1f}%".format( "#" * block + "-" * (bar_length - block), progress * 100)
+    print(text)
+    
+with get_timeseries() as ts0:
+    times = np.arange(ts0.time.values[0], ts0.time.values[-1], 3, dtype='datetime64[D]')
+    ts0 = ts0.where(np.isfinite(ts0.temperature+ts0.conductivity), drop=True, )
+    print('Dropped')
+    for bad in bad_profiles:
+        ts0 = ts0.where(~(ts0.profile_index==bad))
+    print('Bad dropped')
+    alphas = np.zeros(len(times)) + np.NaN
+    taus = np.zeros(len(times)) + np.NaN
+    
+    at0 = (6, 20)
+    for nn, t0 in enumerate(times):
+        ts = ts0.sel(time=slice(t0, t0 + np.timedelta64(3, 'D')))
+        bnds = ((0.0001, 200), (0.0001, 150))
+        res = optimize.minimize(get_TS_diff, at0, (ts, 0.25), tol=1e-3, bounds=bnds)
+        if res.success:
+            alphas[nn] = res.x[0] / 100
+            taus[nn] = res.x[1]
+            at0 = (np.nanmean(alphas) * 100, np.nanmean(taus))
+        update_progress(nn / len(times))
+
+        
+
+# +
+fig, axs = plt.subplots(2,1)
+axs[0].plot(times, taus)
+axs[0].set_ylabel(r'$\tau\ [s]$')
+axs[0].set_title(f'{deploy_name}: Up-down T/S cast matching', loc='left')
+axs[1].plot(times, alphas)
+axs[1].set_ylabel(r'$\alpha$')
+
+
+# -
+
+# ### Apply correction
+
+# +
+def correct_salinity(ts, tau=12, alpha=0.03):
+    """
+    Apply the Lueck 1990, Morrison et al 1994 salinity correction to the the data.
+    
+    Parameters:
+    -----------
+    
+    ts : xarray
+        timeseries data, must have 'temperature', 'salinity', 'conductivity', and 
+        'pressure' variables.
+    
+    tau : float
+        time constant, seconds for filter to apply to temperature data used to 
+        calculate the salinity
+        
+    alpha : float
+        fraction of the signal to correct.
+        
+    Note that ``tau`` and ``alpha`` are determined empirically 
+    (i.e. see write up in ``process_delayed_20190718``).
+    """
+    
+    coefa = 4 * fn * alpha * tau / (1 + 4 * fn * tau)
+    if coefa == 0:
+        coefb = 0
+    else:
+        coefb = 1 - 2 * coefa / alpha
+    b = np.array([1, -1]) * coefa
+    a = np.array([1, coefb])
+
+    good = np.where(np.isfinite(ts.temperature))
+    print('done good')
+    x0 = ts.temperature.values[good]
+    x0  = signal.lfilter(b, a, x0)
+    print('Done filter')
+    t =  ts.temperature.values[good] - x0
+    ts['salinity'].values[good] = seawater.eos80.salt(ts.conductivity.values[good] / seawater.constants.c3515 * 10, 
+                                         t, ts.pressure.values[good])
+    ts['salinity'].attrs['comment'] = ('Salinity, calculated from temperature filtered to minimize '
+                                      'up/down profile differences, following Morison et al 1994. '
+                                      'Constants calculated from cruise means and checked in notebook.')
+    ts['salinity'].attrs['temp_corrections_factors'] = f'alpha={alpha}, tau={tau}'
+    ts['salinity'].attrs['method'] += ' ncprocess.correct_salinity'
+    
+    ts.attrs['data_mode'] = 'M'
+    ts.attrs['processing_level'] = 'Mixed: salinity thermal lag corrections applied'
+    
+    return ts
+    
+    
+    
+with get_timeseries() as ts:
+    ts = correct_salinity(ts, tau=20, alpha = 0.02)
+#     !mkdir /Users/jklymak/gliderdata/deployments/dfo-walle652/dfo-walle652-20190718/L1-timeseries/
+    ts.to_netcdf(f'{deploy_prefix}/L1-timeseries/{deploy_name}-L1.nc')
+# -
+
+# ### make grid
+#
+# Making the level-1 grid with the new salinity in it, and plotting.  There is still *some* residual up-down assymetry, but it is substantially less than before, and this is really a very strong thermocline right here.  
+
+ncprocess.make_L2_gridfiles(f'{deploy_prefix}/L1-timeseries/{deploy_name}-L1.nc', 
+                            f'{deploy_prefix}/L1-gridfiles/', './deployment.yml')
+
+# +
+with get_gridfile(level='L1') as ds:
+    fig, axs = plt.subplots(3, 1, sharex=True, sharey=True, constrained_layout=True, figsize=(6, 7))
+    ds.salinity.plot(ax=axs[1], vmin=32, vmax=33)
+    axs[1].set_title('Correction ' + ds.salinity.attrs['temp_corrections_factors'])
+
+    with get_gridfile(level='L0') as ds:
+        ds.salinity.plot(ax=axs[0], vmin=32, vmax=33)
+        axs[0].set_title('No correction')
+    axs[0].set_xlabel('')
+    
+    ds.temperature.plot(ax=axs[2], vmin=6, vmax=15.5)
+    
+    axs[0].set_xlim(np.datetime64('2019-10-03'), np.datetime64('2019-10-09'))
+    axs[0].set_ylim(100, 0)
+
+
+# -
+
+with xr.open_dataset('./dfo-walle652-20190718_grid.nc') as ds:
+    fig, axs = plt.subplots(3, 1, sharex=True, sharey=True, figsize=(7, 7), constrained_layout=True)
+    ax = axs[0]
+    pcm = ax.pcolormesh(ds['time'], ds['depth'], ds['salinity'], 
+                        rasterized=True, cmap='YlGnBu', vmin=31.5, vmax=34.5)
+    fig.colorbar(pcm, ax=ax)
+    ax.set_ylim(200, 0)
+    #ax.set_xlim(left=np.datetime64('2019-08-15'), right=np.datetime64('2019-08-30'))
+    ax.grid(True)
+
+    ax = axs[1]
+    pcm = ax.pcolormesh(ds['time'], ds['depth'], ds['temperature'], 
+                        rasterized=True, cmap='hot', vmin=4, vmax=16)
+    fig.colorbar(pcm, ax=ax)
+    ax.grid(True)
+    ax.set_ylim(200, 0)
+    #ax.set_xlim(left=np.datetime64('2019-09-25'), right=np.datetime64('2019-10-05'))
+
+with get_timeseries() as ds:
+    good = np.where(np.isfinite(ds.temperature))[0]
+    fig, ax = plt.subplots()
+    t = (ds.time[good].values - ds.time[good[0]].values).astype('float')/1e9
+    
+    ax.hist(np.diff(t), bins=np.arange(0, 7, 0.1))
+    
+
 
 # +
 with xr.open_dataset('../dfo-walle652-20191209/L0-gridfiles/dfo-walle652-20191209_grid.nc') as ds:
