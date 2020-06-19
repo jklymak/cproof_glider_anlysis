@@ -341,9 +341,11 @@ print(res.x)
 
 # ### Determine IIR filter co-eficitients
 #
-# Using this minimizing procedure, we apply this in three day blocks.  The region of a "good" fit is quite broad, so here we choose $\tau = 12s$ and $\alpha = 0.035$
+# Using this minimizing procedure, we apply this in three day blocks.  The region of a "good" fit is quite broad, so here we choose $\tau = 20s$ and $\alpha = 0.02$
 
 # +
+# WARNING: SLOW!!
+
 import time, sys
 from IPython.display import clear_output
 
@@ -461,6 +463,7 @@ with get_timeseries() as ts:
     ts = correct_salinity(ts, tau=20, alpha = 0.02, fn=0.25)
     # !mkdir /Users/jklymak/gliderdata/deployments/dfo-walle652/dfo-walle652-20190718/L1-timeseries/
     ts.to_netcdf(f'{deploy_prefix}/L1-timeseries/{deploy_name}_L1.nc')
+    print(f'Saved {deploy_prefix}/L1-timeseries/{deploy_name}_L1.nc')
 # -
 
 # ### make grid
@@ -470,6 +473,7 @@ with get_timeseries() as ts:
 ncprocess.make_L2_gridfiles(f'{deploy_prefix}/L1-timeseries/{deploy_name}_L1.nc', 
                             f'{deploy_prefix}/L1-gridfiles/', './deployment.yml')
 
+# +
 with get_gridfile(level='L1') as ds:
     fig, axs = plt.subplots(3, 1, sharex=True, sharey=True, constrained_layout=True, figsize=(6, 7))
     ds.salinity.plot(ax=axs[1], vmin=32, vmax=33)
@@ -494,15 +498,18 @@ with get_gridfile(level='L1') as ds:
     t.plot(ax=axs[0], vmin=-1, vmax=1, cmap='RdBu_r')
     ax.set_ylim(1000, 0)
     t.mean(dim='depth').plot(ax=axs[1])
+    
+    
+# -
+
 # ## Screening bad data
 #
 # This is probably not much different than above, but it would be nice to automate it somewhat.  What makes a bad temperature or salinity?  Very much out of the natural range.  It is also nice to feed this back into the time series, so that will be a bit of an issue, but starting on density will be quickest...
-# ## Remove outliers
-# ## Screen bad T/S
-# ## Find salinity anomalies
 #
-# T/S anomalies are not hard to identify
-
+#   - Remove outliers
+#   - Screen bad T/S
+#   - Find salinity anomalies
+#
 # ### Grid onto potential density
 
 # +
@@ -535,9 +542,6 @@ ax[1].plot(Smean)
 
 ax[2].plot(Tmean)
 
-
-
-
 # -
 
 
@@ -545,7 +549,7 @@ ax[2].plot(Tmean)
 #
 # We will compute this as $\delta S(\sigma_{\theta}) = S(\sigma_{\theta}) - S_0 (\sigma_{\theta})$.  We will then high-pass this to remove regional differences
 
-with get_gridfile(level='L2') as ds:
+with get_gridfile(level='L1') as ds:
     sanom = ds.salinity - np.interp(ds.potential_density, Rbins[:-1] + np.diff(Rbins) / 2, Smean)
     sanom = sanom.fillna(0)
     s0 = sanom.rolling(time=61, center=True).mean()
@@ -581,7 +585,21 @@ with get_gridfile(level='L1') as ds:
     
     ds.to_netcdf(f'{deploy_prefix}/L2-gridfiles/{deploy_name}_grid.nc')
 # -
+# ### Make L2 time series
+
+# +
+os.system(f'!mkdir {deploy_prefix}/L2-timeseries/')
 
 
-
+with get_gridfile(level='L1') as ts:
+    for index, bad in bad_salinity.iterrows():   
+        ind = np.where((ts.profile_index == bad.profile) &
+                       (ts.pressure > bad.pstart) &
+                       (ts.pressure < bad.pstop))[0]
+        ts.salinity[ind] = np.NaN
+    ts.salinity.attrs['comment'] += ';\nSalinity spikes removed manually (bad_salinity.csv);'
+    ts.attrs['date_modified'] = datetime.datetime.now().isoformat()
+    ts.attrs['processing_level'] += ';\nSalinity spikes removed (conductivity not changed); '
+    
+    ts.to_netcdf(f'{deploy_prefix}/L2-timeseries/{deploy_name}_L2.nc')
 
