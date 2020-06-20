@@ -589,7 +589,7 @@ with get_gridfile(level='L1') as ds:
 # ### Make L2 time series
 
 # +
-os.system(f'!mkdir {deploy_prefix}/L2-timeseries/')
+os.system(f'mkdir {deploy_prefix}/L2-timeseries/')
 
 
 with get_gridfile(level='L1') as ts:
@@ -605,5 +605,7 @@ with get_gridfile(level='L1') as ts:
     ts.to_netcdf(f'{deploy_prefix}/L2-timeseries/{deploy_name}_L2.nc')
 
 # -
+
+ts.attrs
 
 
