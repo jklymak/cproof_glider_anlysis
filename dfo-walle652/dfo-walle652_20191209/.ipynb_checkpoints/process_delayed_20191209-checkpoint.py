@@ -692,10 +692,6 @@ for i, lev in enumerate(['L0', 'L2']):
     with get_gridfile(level=lev) as ds:
         ds=ds.where((ds.time>np.datetime64('2020-01-13')) & (ds.time<np.datetime64('2020-01-17')), drop=True)
         ds.oxygen_concentration.plot(rasterized=True, vmax=300, ax=ax[i])
-        ax[i].set_ylim(400, 0)
-fig.savefig('O2Correct.png')
-
-# !open O2Correct.png
 
 # ### Make L2 time series
 

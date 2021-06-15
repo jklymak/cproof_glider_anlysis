@@ -6,7 +6,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.7.1
+#       jupytext_version: 1.5.0
 #   kernelspec:
 #     display_name: Python 3
 #     language: python
@@ -22,9 +22,9 @@
 # ## Copy data from card offload
 
 if False:
-    # !mkdir raw
-    # !rsync -av ../../../card_offloads/dfo-walle652/dfo-walle652_20190718/nav_20191113/LOGS/*.DBD raw/
-    # !rsync -av ../../../card_offloads/dfo-walle652/dfo-walle652_20190718/science_20191113/LOGS/*.EBD raw/
+#     !mkdir raw
+#     !rsync -av ../../../card_offloads/dfo-walle652/dfo-walle652_20190718/nav_20191113/LOGS/*.DBD raw/
+#     !rsync -av ../../../card_offloads/dfo-walle652/dfo-walle652_20190718/science_20191113/LOGS/*.EBD raw/
 
 # ## Set up the processing
 #
@@ -455,115 +455,14 @@ def correct_salinity(ts, tau=12, alpha=0.03, fn=0.25):
     ts.attrs['processing_level'] = 'Mixed: salinity thermal lag corrections applied'
     
     return ts
-
-def correct_oxygen(ts, tau=54, smoothlen=21):
-    """
-    Apply Bittig et al 2014 correction.  Smooth first so as nto to amplify small-scale noise.
     
-    """
-    good = np.where(np.isfinite(ts.oxygen_concentration))
-    t = (ts.time.values[good]-ts.time.values[good][0]).astype(float) / 1e9
-    dt = np.diff(t)
-    coefb = (1.0 + 2.0 * tau / np.diff(t) )**(-1)
-    coefa = 1.0 - 2.0 * coefb
-
-    good = np.where(np.isfinite(ts.oxygen_concentration))[0]
-    x0 = ts.oxygen_concentration.values[good]
-    x0 = np.convolve(x0, np.ones(smoothlen)/smoothlen, 'same')
-    x0[:-1] =  0.5/coefb * (x0[1:] - coefa * x0[:-1])
-    x0 = np.convolve(x0, np.ones(2)/2, 'same')
-    x0 = np.interp(t, (t[1:]+t[:-1])/2, x0[:-1])
-    ts['oxygen_concentration'][good] = x0
-    ts['oxygen_concentration'].attrs['comment'] = (f'Oxygen smoothed {smoothlen} points, and then lagged {tau}s, following Bittig et al 2014')
-    ts['oxygen_concentration'].attrs['temp_corrections_factors'] = f'smooth_len={smoothlen}, tau={tau}'
-    ts['oxygen_concentration'].attrs['method'] = 'ncprocess.correct_oxygen'
-    ts.attrs['processing_level'] += 'Mixed: oxygen lag corrections applied'
-
-    
-    return ts
-
     
 with get_timeseries() as ts:
     ts = correct_salinity(ts, tau=20, alpha = 0.02, fn=0.25)
-
-    ts = correct_oxygen(ts, tau=54, smoothlen=21)
-
     # !mkdir /Users/jklymak/gliderdata/deployments/dfo-walle652/dfo-walle652-20190718/L1-timeseries/
     ts.to_netcdf(f'{deploy_prefix}/L1-timeseries/{deploy_name}_L1.nc')
     print(f'Saved {deploy_prefix}/L1-timeseries/{deploy_name}_L1.nc')
 # -
-
-with get_timeseries() as ts0:
-    tau = 54.0
-    fig, ax = plt.subplots()
-    for td in range(777, 785):
-        ts = ts0.where(ts0.profile_index==td, drop=True)
-
-        #def correct_oxygen(ts, tau=220):
-        """
-        Apply the Lueck 1990, Morrison et al 1994 salinity correction to the the data.
-
-        Parameters:
-        -----------
-
-        tau : float
-            time constant (seconds) for filter to apply to oxygen data
-
-        Note that ``tau`` was determined empirically by T. Ross.
-        """
-
-        # single pole filter...
-        # b=(1/ +2*tau./(t2(i(2:end))-t2(i(1:end-1)))).^-1;
-        # a=1-2*b;
-        # do=.5./b.*(oxygen_concentration(i(2:end))-a.*oxygen_concentration(i(1:end-1)));
-
-        good = np.where(np.isfinite(ts.oxygen_concentration))
-        t = (ts.time.values[good]-ts.time.values[good][0]).astype(float) / 1e9
-        #print('t', t)
-        dt = np.median(ts.time[good].diff(dim='time')).astype(float) / 1e9
-        print(dt)
-        coefb = (1.0 + 2.0 * tau / np.diff(t) )**(-1)
-        coefa = 1.0 - 2.0 * coefb
-
-        good = np.where(np.isfinite(ts.oxygen_concentration))[0]
-        #x0 = good*1.0 * 0
-        x0 = ts.oxygen_concentration.values[good]
-        x0 = np.convolve(x0, np.ones(61)/61, 'same')
-        
-        x0[:-1] =  0.5/coefb * (x0[1:] - coefa * x0[:-1])
-        # for lfilter:
-        #a = np.array([1, 1])
-        #b = (1.0 / coefb) * np.array([1, -coefa])
-
-        print('done good')
-        #x0 = ts.oxygen_concentration.values[good]
-        #x0 = np.convolve(signal.lfilter(b, a, x0), np.ones(2)/2, 'same')
-        
-        
-        x0 = np.interp(t, (t[1:]+t[:-1])/2, x0[:-1])
-        col = 'b'
-        if ts.profile_direction[10] == -1:
-            col = 'c'
-        ax.plot(ts.oxygen_concentration[good].values, ts.depth[good], '.', color=col)
-        col = 'r'
-        if ts.profile_direction[10] == -1:
-            col = 'm'
-
-        # ax.plot(x0+10, ts.depth[good], '.', color=col, markersize=1)
-        ax.plot(x0+10, ts.depth[good], '.', color=col, markersize=1)
-        ax.set_ylim(200, 0)
-        ax.set_xlim(100, 300)
-        ax.set_title(f'$\\tau = {tau} s$')
-        #print(x0)
-        fig.savefig(f'oxygenTau{int(tau):04d}.png')
-
-# !open oxygenTau0050.png
-
-
-
-
-
-# !open oxygenTau0*.png
 
 # ### make grid
 #
@@ -687,16 +586,6 @@ with get_gridfile(level='L1') as ds:
     
     ds.to_netcdf(f'{deploy_prefix}/L2-gridfiles/{deploy_name}_grid.nc')
 # -
-fig, ax = plt.subplots(1, 2)
-for i, lev in enumerate(['L0', 'L2']):
-    with get_gridfile(level=lev) as ds:
-        ds=ds.where((ds.time>np.datetime64('2020-01-13')) & (ds.time<np.datetime64('2020-01-17')), drop=True)
-        ds.oxygen_concentration.plot(rasterized=True, vmax=300, ax=ax[i])
-        ax[i].set_ylim(400, 0)
-fig.savefig('O2Correct.png')
-
-# !open O2Correct.png
-
 # ### Make L2 time series
 
 # +

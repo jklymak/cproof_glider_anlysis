@@ -6,7 +6,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.7.1
+#       jupytext_version: 1.5.0
 #   kernelspec:
 #     display_name: Python 3
 #     language: python
@@ -15,16 +15,13 @@
 
 # # Processing Steps Delayed Mode
 # - author: J. Klymak
-# - deployment: dfo-walle652-20191209
-# - glider: dfo-walle652
-# - description: Line P mission, starting from west coast and back.
+# - deployment: dfo-bb046-20200908
+# - glider: dfo-bb046
+# - description: Calvert Island to shelf break and back
 
 # ## Copy data from card offload
 
-if False:
-    # !mkdir raw
-    # !rsync -av ../../../card_offloads/dfo-walle652/dfo-walle652_20190718/nav_20191113/LOGS/*.DBD raw/
-    # !rsync -av ../../../card_offloads/dfo-walle652/dfo-walle652_20190718/science_20191113/LOGS/*.EBD raw/
+# !ls
 
 # ## Set up the processing
 #
@@ -55,8 +52,8 @@ import pyglider.ncprocess as ncprocess
 # %autoreload 2
 
 # +
-deploy_name = 'dfo-walle652-20191209'
-deploy_prefix = '../../../deployments/dfo-walle652/dfo-walle652-20191209/'
+deploy_name = 'dfo-bb046-20200908'
+deploy_prefix = f'/Users/jklymak/gliderdata/deployments/dfo-bb046/{deploy_name}/'
 # !mkdir figs
 def get_timeseries(level='L0'):
     return xr.open_dataset(f'{deploy_prefix}/{level}-timeseries/{deploy_name}_{level}.nc')
@@ -104,7 +101,8 @@ def plot_profiles(fname, plotname):
                 axs[2, nn].set_ylabel('Direction')
             else:
                 axs[2, nn].set_yticklabels('')
-
+            for ii in range(1, 3):
+                axs[0, nn].get_shared_x_axes().join(axs[0, nn], axs[ii, nn])
 
             plt.show()
     fig.savefig(plotname)
@@ -180,13 +178,17 @@ with xr.open_dataset('SalinityGrid.nc') as sal:
     fig, ax = plt.subplots()
     (sal['salinity']-sal.salinity.mean(dim='profiles')).plot(vmin=-2, vmax=2, cmap='RdBu_r')
 
+# !open bad_salinity.csv -a Atom
+
 # ## T/C offset
 #
 # Check if there should be a time offset applied to the conductivity cell to match the temperature.
 #
-# From the plot below, we see that there is a slight up/down asymmetry, with the profiles saltier on the way down (profile 100 and 102) than on the way up, particularly right near the seasonal thermocline.  This really isn't too bad, but lets try and fix.
+# From the plot below, we see that there is substantial asymmetry, with the profiles saltier on the way down (profile 220 and 222) than on the way up, particularly right near the seasonal thermocline.  
 #
-# This CTD is pumped, however, so the lags are nowhere near as bad as other glider CTDs.  The evidence below is that perhaps a half-second delay will improve the match near the surface, but adding that delay makes the profile more variable at deeper depths, so the advantage is quite minimal.  Note the tightness of the deep T/S curves, so overall this CTD is doing quite a good job.
+#
+
+# +
 
 with get_timeseries() as ds0:
     fig, ax = plt.subplots()
@@ -200,6 +202,7 @@ with get_timeseries() as ds0:
         ax.set_title(f'{deploy_name}', loc='left')
         ax.grid(True)
     ax.legend()
+# -
 
 # This issue is easily seen in the temperature-gridded salinity shown above.
 
@@ -209,7 +212,7 @@ with xr.open_dataset('SalinityGrid.nc') as sal:
     ax[0].plot(sal.profiles, sal.profile_direction[:-1])
     ax[0].set_ylim([-1.2, 1.2])
     ax[0].set_ylabel('Profile Dir')
-    sal.salinityClean.plot(ax=ax[1], vmin=32, vmax=33)
+    sal.salinityClean.plot(ax=ax[1], vmin=31, vmax=33)
     ax[0].set_xlim(400, 600)
 
 
@@ -273,8 +276,8 @@ def get_TS_diff(alphatau, ts, fn, reterr=True):
     
     # bin the data:
     tbins = Tmean.values[::7]
-    tbins = tbins[tbins<16]
-    tbins = tbins[tbins > 6]
+    tbins = tbins[tbins<7]
+    tbins = tbins[tbins > 2]
     profile_bins = np.unique(ts['profile_index'])
     direction = profile_bins * 0
     for n, i in enumerate(profile_bins):
@@ -297,8 +300,8 @@ def get_TS_diff(alphatau, ts, fn, reterr=True):
 
 
 with get_timeseries() as ts:
-    t0 = np.datetime64('2019-08-01')
-    ts = ts.sel(time=slice(t0, t0 + np.timedelta64(3, 'D')))
+    t0 = np.datetime64('2020-07-30', 'ns')
+    ts = ts.isel(time=range(86400*11, 86400*14))
     ts = ts.where(np.isfinite(ts.temperature+ts.conductivity), drop=True, )
     for bad in bad_profiles:
         ts = ts.where(~(ts.profile_index==bad), drop=True)
@@ -310,17 +313,19 @@ with get_timeseries() as ts:
     ax.plot(ts.salinity[ind], ts.temperature[ind], 'r.', markersize=1)
 
     import scipy.optimize as optimize
-
-    bnds = ((0.0001, 200), (0.0001, 150))
+    # alpha * 1000, tau
+    bnds = ((0.0001, 1000), (0.0001, 40))
     if 1:
         res = optimize.basinhopping(get_TS_diff, (20, 20), T=0.5, stepsize=2, 
-                                    minimizer_kwargs={'tol':1e-4, 'bounds':bnds, 'args':(ts, 0.25)})
+                                    minimizer_kwargs={'tol':1e-3, 'bounds':bnds, 'args':(ts, 2)})
+    
     
     tau = res.x[1]
     alpha = res.x[0] / 1e3
     
-    newts, sal = get_TS_diff((alpha, tau), ts, 0.25, reterr=False)
+    newts, sal = get_TS_diff((alpha * 1e3, tau), ts, 2, reterr=False)
     
+    ax.set_title(f'{tau}, {alpha}')
     ind = np.where(newts.profile_direction.values== 1)[0]
     ax.plot(newts.salinity[ind]+3, newts.temperature[ind], 'g.', markersize=1)
 
@@ -329,13 +334,14 @@ with get_timeseries() as ts:
 
     fig, ax = plt.subplots(2, 1)
     ax[1].pcolormesh(sal)
-    _, salold = get_TS_diff((0, 0), ts, 0.25, reterr=False)
+    _, salold = get_TS_diff((0, 0), ts, 2, reterr=False)
     ax[0].pcolormesh(salold)
 
     print(res)
 # -
 
-print(res.x)
+print(tau)
+print(alpha)
 
 # ### Determine IIR filter co-eficitients
 #
@@ -346,6 +352,8 @@ print(res.x)
 
 import time, sys
 from IPython.display import clear_output
+import warnings
+warnings.filterwarnings("ignore", category=RuntimeWarning) 
 
 def update_progress(progress):
     bar_length = 20
@@ -378,10 +386,11 @@ with get_timeseries() as ts0:
     for nn, t0 in enumerate(times):
         ts = ts0.sel(time=slice(t0, t0 + np.timedelta64(3, 'D')))
         bnds = ((0.0001, 200), (0.0001, 150))
-        res = optimize.basinhopping(get_TS_diff, at0, minimizer_kwargs={'tol':1e-4, 'args': (ts, 0.25), 'bounds':bnds})
+        res = optimize.basinhopping(get_TS_diff, at0, niter=20, 
+                                    minimizer_kwargs={'tol':1e-4, 'args': (ts, 2), 'bounds':bnds})
         print(res)
         if res.lowest_optimization_result.success:
-            alphas[nn] = res.x[0] / 10^3
+            alphas[nn] = res.x[0] / 1e3
             taus[nn] = res.x[1]
             at0 = (np.nanmean(alphas) * 100, np.nanmean(taus))
         update_progress(nn / len(times))
@@ -389,12 +398,7 @@ with get_timeseries() as ts0:
 # -
 
 
-fig, axs = plt.subplots(2,1)
-axs[0].plot(times, taus)
-axs[0].set_ylabel(r'$\tau\ [s]$')
-axs[0].set_title(f'{deploy_name}: Up-down T/S cast matching', loc='left')
-axs[1].plot(times, alphas)
-axs[1].set_ylabel(r'$\alpha$')
+
 
 fig, axs = plt.subplots(2,1)
 axs[0].plot(times, taus)
@@ -451,119 +455,25 @@ def correct_salinity(ts, tau=12, alpha=0.03, fn=0.25):
     ts['salinity'].attrs['temp_corrections_factors'] = f'alpha={alpha}, tau={tau}'
     ts['salinity'].attrs['method'] += ' ncprocess.correct_salinity'
     
+    ts.potential_density.values = seawater.eos80.pden(ts.salinity, ts.potential_temperature, ts.pressure, 0)
+    
     ts.attrs['data_mode'] = 'M'
     ts.attrs['processing_level'] = 'Mixed: salinity thermal lag corrections applied'
     
     return ts
 
-def correct_oxygen(ts, tau=54, smoothlen=21):
-    """
-    Apply Bittig et al 2014 correction.  Smooth first so as nto to amplify small-scale noise.
-    
-    """
-    good = np.where(np.isfinite(ts.oxygen_concentration))
-    t = (ts.time.values[good]-ts.time.values[good][0]).astype(float) / 1e9
-    dt = np.diff(t)
-    coefb = (1.0 + 2.0 * tau / np.diff(t) )**(-1)
-    coefa = 1.0 - 2.0 * coefb
-
-    good = np.where(np.isfinite(ts.oxygen_concentration))[0]
-    x0 = ts.oxygen_concentration.values[good]
-    x0 = np.convolve(x0, np.ones(smoothlen)/smoothlen, 'same')
-    x0[:-1] =  0.5/coefb * (x0[1:] - coefa * x0[:-1])
-    x0 = np.convolve(x0, np.ones(2)/2, 'same')
-    x0 = np.interp(t, (t[1:]+t[:-1])/2, x0[:-1])
-    ts['oxygen_concentration'][good] = x0
-    ts['oxygen_concentration'].attrs['comment'] = (f'Oxygen smoothed {smoothlen} points, and then lagged {tau}s, following Bittig et al 2014')
-    ts['oxygen_concentration'].attrs['temp_corrections_factors'] = f'smooth_len={smoothlen}, tau={tau}'
-    ts['oxygen_concentration'].attrs['method'] = 'ncprocess.correct_oxygen'
-    ts.attrs['processing_level'] += 'Mixed: oxygen lag corrections applied'
-
-    
-    return ts
-
+import os
+try:
+    os.mkdir(f'{deploy_prefix}/L1-timeseries/')
+except:
+    pass
     
 with get_timeseries() as ts:
-    ts = correct_salinity(ts, tau=20, alpha = 0.02, fn=0.25)
-
-    ts = correct_oxygen(ts, tau=54, smoothlen=21)
-
+    ts = correct_salinity(ts, tau=25, alpha = 0.02, fn=2)
     # !mkdir /Users/jklymak/gliderdata/deployments/dfo-walle652/dfo-walle652-20190718/L1-timeseries/
     ts.to_netcdf(f'{deploy_prefix}/L1-timeseries/{deploy_name}_L1.nc')
     print(f'Saved {deploy_prefix}/L1-timeseries/{deploy_name}_L1.nc')
 # -
-
-with get_timeseries() as ts0:
-    tau = 54.0
-    fig, ax = plt.subplots()
-    for td in range(777, 785):
-        ts = ts0.where(ts0.profile_index==td, drop=True)
-
-        #def correct_oxygen(ts, tau=220):
-        """
-        Apply the Lueck 1990, Morrison et al 1994 salinity correction to the the data.
-
-        Parameters:
-        -----------
-
-        tau : float
-            time constant (seconds) for filter to apply to oxygen data
-
-        Note that ``tau`` was determined empirically by T. Ross.
-        """
-
-        # single pole filter...
-        # b=(1/ +2*tau./(t2(i(2:end))-t2(i(1:end-1)))).^-1;
-        # a=1-2*b;
-        # do=.5./b.*(oxygen_concentration(i(2:end))-a.*oxygen_concentration(i(1:end-1)));
-
-        good = np.where(np.isfinite(ts.oxygen_concentration))
-        t = (ts.time.values[good]-ts.time.values[good][0]).astype(float) / 1e9
-        #print('t', t)
-        dt = np.median(ts.time[good].diff(dim='time')).astype(float) / 1e9
-        print(dt)
-        coefb = (1.0 + 2.0 * tau / np.diff(t) )**(-1)
-        coefa = 1.0 - 2.0 * coefb
-
-        good = np.where(np.isfinite(ts.oxygen_concentration))[0]
-        #x0 = good*1.0 * 0
-        x0 = ts.oxygen_concentration.values[good]
-        x0 = np.convolve(x0, np.ones(61)/61, 'same')
-        
-        x0[:-1] =  0.5/coefb * (x0[1:] - coefa * x0[:-1])
-        # for lfilter:
-        #a = np.array([1, 1])
-        #b = (1.0 / coefb) * np.array([1, -coefa])
-
-        print('done good')
-        #x0 = ts.oxygen_concentration.values[good]
-        #x0 = np.convolve(signal.lfilter(b, a, x0), np.ones(2)/2, 'same')
-        
-        
-        x0 = np.interp(t, (t[1:]+t[:-1])/2, x0[:-1])
-        col = 'b'
-        if ts.profile_direction[10] == -1:
-            col = 'c'
-        ax.plot(ts.oxygen_concentration[good].values, ts.depth[good], '.', color=col)
-        col = 'r'
-        if ts.profile_direction[10] == -1:
-            col = 'm'
-
-        # ax.plot(x0+10, ts.depth[good], '.', color=col, markersize=1)
-        ax.plot(x0+10, ts.depth[good], '.', color=col, markersize=1)
-        ax.set_ylim(200, 0)
-        ax.set_xlim(100, 300)
-        ax.set_title(f'$\\tau = {tau} s$')
-        #print(x0)
-        fig.savefig(f'oxygenTau{int(tau):04d}.png')
-
-# !open oxygenTau0050.png
-
-
-
-
-
-# !open oxygenTau0*.png
 
 # ### make grid
 #
@@ -622,9 +532,9 @@ means = xr.Dataset()
 Rmean = Rmean.sortby(Rmean, ascending=True).where(np.isfinite(Rmean), drop=True)
 
 Rbins = Rmean[::1]
-Rbins = np.hstack([1020, Rbins, 1027.4])
-# print(Rbins, type(Rbins))
 
+Rbins = np.hstack([1020, Rbins, 1028])
+print(Rbins, type(Rbins))
 with get_timeseries(level='L1') as ts:
     good = np.where(np.isfinite(ts.salinity + ts.potential_density + ts.temperature))[0]
     Smean, _, _ = stats.binned_statistic(ts.potential_density.values[good], 
@@ -660,7 +570,7 @@ with get_gridfile(level='L1') as ds:
     ax[0].pcolormesh(ds.profile, ds.depth,ds.salinity)
     ax[0].set_ylim(1000, 0)
 
-    ax[1].pcolormesh(ds.profile, ds.depth, ds.salinity_anomaly, vmin=-0.2, vmax=0.2, cmap='RdBu_r')
+    ax[1].pcolormesh(ds.profile, ds.depth, ds.salinity_anomaly, vmin=-0.05, vmax=0.05, cmap='RdBu_r')
     ax[1].set_ylim(1000, 0)
     
     ax[2].plot(ds.profile, np.nanmax(np.abs(ds.salinity_anomaly.values), axis=0))
@@ -670,7 +580,10 @@ with get_gridfile(level='L1') as ds:
 # +
 import os 
 import datetime
-os.system(f'!mkdir {deploy_prefix}/L2-gridfiles/')
+try:
+    os.mkdir(f'{deploy_prefix}/L2-gridfiles/')
+except:
+    pass
 import pandas as pd 
 
 bad_salinity =  pd.read_csv('bad_salinity.csv')
@@ -679,6 +592,10 @@ with get_gridfile(level='L1') as ds:
         ind = np.where(ds.profile == bad.profile)[0]
         badd = np.where((ds.depth > bad.pstart) & (ds.depth<bad.pstop))[0]
         ds.salinity[badd, ind] = np.NaN
+        ds.potential_temperature[badd, ind] = np.NaN
+        ds.potential_density[badd, ind] = np.NaN
+
+        
     fig, ax = plt.subplots()
     ds.salinity.plot()
     ds.salinity.attrs['comment'] += ';\nSalinity spikes removed manually (bad_salinity.csv);'
@@ -687,16 +604,6 @@ with get_gridfile(level='L1') as ds:
     
     ds.to_netcdf(f'{deploy_prefix}/L2-gridfiles/{deploy_name}_grid.nc')
 # -
-fig, ax = plt.subplots(1, 2)
-for i, lev in enumerate(['L0', 'L2']):
-    with get_gridfile(level=lev) as ds:
-        ds=ds.where((ds.time>np.datetime64('2020-01-13')) & (ds.time<np.datetime64('2020-01-17')), drop=True)
-        ds.oxygen_concentration.plot(rasterized=True, vmax=300, ax=ax[i])
-        ax[i].set_ylim(400, 0)
-fig.savefig('O2Correct.png')
-
-# !open O2Correct.png
-
 # ### Make L2 time series
 
 # +
@@ -709,6 +616,10 @@ with get_gridfile(level='L1') as ts:
                        (ts.pressure > bad.pstart) &
                        (ts.pressure < bad.pstop))[0]
         ts.salinity[ind] = np.NaN
+        ts.potential_density[ind] = np.NaN
+        ts.potential_temperature[ind] = np.NaN
+
+        
     ts.salinity.attrs['comment'] += ';\nSalinity spikes removed manually (bad_salinity.csv);'
     ts.attrs['date_modified'] = datetime.datetime.now().isoformat()
     ts.attrs['processing_level'] += ';\nSalinity spikes removed (conductivity not changed); '
@@ -717,6 +628,96 @@ with get_gridfile(level='L1') as ts:
 
 # -
 
-ts.attrs
+ts
+
+with get_timeseries() as ts0:
+    print(ts0.time.diff('time'))
+    fig, ax = plt.subplots()
+    ax.plot(ts0.time.diff('time'))
+
+# +
+fig, axs = plt.subplots(2, 1, sharex=True, sharey=True)
+ax = axs[0]
+pc = ax.pcolormesh((ds.pitch), cmap='RdBu_r', vmin=-32, vmax=32)
+fig.colorbar(pc, ax=ax)
+
+ax = axs[1]
+pc = ax.pcolormesh(ds.salinity, cmap='jet', vmin=33, vmax=36)
+fig.colorbar(pc, ax=ax)
+ax.set_xlim(380, 430)
+ax.set_ylim(850, 200)
+
+
+# +
+with get_timeseries(level='L0') as ts:
+    with get_gridfile(level='L1') as ds:
+    
+        fig, axs = plt.subplots(3, 1, sharex=True)
+
+        axs[0].plot(ds.time, ds.salinity[300, :])
+
+        axs[0].set_ylim([33.8, 34.2])
+
+        axs[1].plot(ds.time, ds.pitch[300, :])
+
+        time = (ts.time.values-np.datetime64('2020-01-01')).astype('float') / 1e9
+        axs[2].plot(ts.time[1:], np.diff(ts.pressure)/np.diff(time))
+        axs[2].set_ylim([-0.3, 0.3])
+
+
+
+# +
+fig, axs = plt.subplots(3, 1, sharex=True, sharey=True)
+
+with get_gridfile(level='L0') as ds0:
+    ax = axs[0]
+    ax.pcolormesh(ds0.salinity, cmap='RdBu_r', vmin=31)
+    ax.set_ylim(400, 0)
+with get_gridfile(level='L1') as ds:
+    ax = axs[1]
+    ax.pcolormesh(ds.salinity, cmap='RdBu_r', vmin=31)
+    print(ds.attrs)
+    ax.set_ylim(400, 0)
+
+    ax = axs[2]
+    ax.pcolormesh(ds.salinity-ds0.salinity, cmap='RdBu_r', vmin=-1/10, vmax=1/10)
+    print(ds.attrs)
+    ax.set_ylim(400, 0)
+
+
+# -
+
+fig, ax = plt.subplots()
+for ind in range(402, 408):
+    ax.plot(ds0.salinity[:, ind], ds0.temperature[:, ind], '.')
+
+fig, ax = plt.subplots()
+for ind in range(402, 408):
+    ax.plot(ds.salinity[:, ind], ds.temperature[:, ind], '.')
+
+with get_gridfile(level='L2') as ds:
+    fig, ax = plt.subplots()
+    pc = ax.pcolormesh(ds.conductivity, vmin=3.2, vmax=3.4)
+    ax.set_ylim([800, 0])
+    fig.colorbar(pc)
+
+with get_gridfile(level='L1') as ds:
+    fig, axs = plt.subplots(1, 2, sharey=True)
+    ax = axs[0]
+    print(ds.profile_direction[300, 402])
+    ax.plot(ds.conductivity[:, 402:408:2], ds.temperature[:, 402:408:2], 'r.', label='down')
+    ax.plot(ds.conductivity[:, 403:409:2], ds.temperature[:, 403:409:2], 'g.', label='up')
+    ax.legend()
+    ax.set_ylim(3.4, 7)
+    ax.set_xlim(3.2, 3.5)
+    ax = axs[1]
+    print(ds.profile_direction[300, 402])
+    ax.plot(ds.salinity[:, 402:408:2], ds.temperature[:, 402:408:2], 'r.', label='down')
+    ax.plot(ds.salinity[:, 403:409:2], ds.temperature[:, 403:409:2], 'g.', label='up')
+    ax.set_xlim(33.2, 34.5)
+
+    ax.legend()
+
+ds.profile_direction[53, 402:409]
 
 
