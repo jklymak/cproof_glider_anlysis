@@ -1,2 +1,3 @@
 *.ipynb
 *.nc
+.DS_Store
